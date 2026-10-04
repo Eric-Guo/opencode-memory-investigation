@@ -1,0 +1,3 @@
+interface:
+  display_name: "OpenCode Memory Investigation"
+  short_description: "Profile OpenCode memory and isolate suspected leaks"
