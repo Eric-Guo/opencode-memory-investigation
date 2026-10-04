@@ -1,6 +1,6 @@
 ---
 name: opencode-memory
-description: Investigate OpenCode server memory usage and suspected leaks, especially Node SEA processes on macOS. Measure unprofiled growth, reproduce location and session/subscription lifecycles in isolation, and analyze V8 heap survivors and candidate retaining paths.
+description: Investigate OpenCode server memory usage and suspected leaks, including Node SEA processes on macOS and Linux. Measure unprofiled growth, reproduce location and session/subscription lifecycles in isolation, and analyze V8 heap survivors and candidate retaining paths.
 ---
 
 # OpenCode memory investigation
@@ -10,13 +10,13 @@ Distinguish startup/dependency costs, cached project state, native allocations, 
 ## Start with inexpensive evidence
 
 1. Resolve the requested process with `ps`; inspect its exact command, uptime, CPU and executable. Record repository revision and working-tree status. A filename such as `opencode2-v2.0.7` may contain a different dev build; corroborate with service registration or that process's startup log.
-2. On macOS, collect several samples with the helper below. It only reads process state and writes a new private evidence directory. It never signals or restarts the process.
+2. On macOS or Linux, collect several samples with the helper below. It only reads process state and writes a new private evidence directory. It never signals or restarts the process.
 
    ```bash
    python3 <skill-dir>/scripts/sample-process.py <pid> --out /tmp/opencode-memory-live-<unique>
    ```
 
-   Defaults: three samples, ten seconds apart. Use `--samples 1` for a quick inventory. On other platforms, use native process accounting instead of the macOS helper.
+   Defaults: three samples, ten seconds apart. Use `--samples 1` for a quick inventory. Linux uses `/proc/<pid>/status` and `smaps_rollup` with FD/thread counts. Its RSS/PSS and anonymous/file-backed categories are not macOS physical footprint. See [Linux accounting and budgets](references/linux.md).
 3. Read the relevant server diagnostics and source. Use [the OpenCode reference](references/opencode.md) for file anchors and authenticated location inventory. Keep service passwords in memory and out of tool output. Do not invoke a command that ensures or replaces the managed server merely to obtain status.
 4. Compare like metrics. macOS physical footprint, RSS, virtual reservation, V8 heap, external buffers, and serialized snapshot size are different measures. A SQLite cache limit is not its actual occupancy. A single large number does not establish growth or a leak.
 
@@ -46,8 +46,9 @@ python3 <skill-dir>/scripts/isolated-probe.py \
   --checkpoints 10,30,100
 ```
 
-Without `--checkpoints`, it measures only a fresh-server baseline. It starts its own server on a loopback ephemeral port with temporary data/configuration/cache/state/project directories, no inherited provider credentials, model fetching disabled, and filesystem watchers disabled. It does not accept a live server URL or use `serve --service`. It waits for agent/plugin initialization, reads models, evicts its own project, and verifies the loaded-location list is empty before each sample. It terminates only its own child, including on failure.
+Without `--checkpoints`, it measures only a fresh-server baseline. It starts its own server on a loopback ephemeral port with temporary HOME/TMP/data/configuration/cache/state/project directories, no inherited provider credentials, model fetching disabled, and filesystem watchers disabled. It does not accept a live server URL or use `serve --service`. It waits for agent/plugin initialization, reads models, evicts its own project, and verifies the loaded-location list is empty before each sample. It terminates only its own child, including on failure.
 
+- The child has a default 600-second total deadline and 2048-MiB sampled RSS ceiling. Set `--max-seconds` and `--max-rss-mib` for the available machine budget; RSS polling is not a hard allocation limit and cannot guarantee OOM prevention.
 - `--snapshots none` never signals the child; all footprint samples are unprofiled. Node is not needed for analysis in this mode.
 - `--snapshots final` measures the whole run unprofiled and takes one snapshot after the final physical sample.
 - `--snapshots each` (the backward-compatible default) takes a heap at every checkpoint, including cycle zero. Only the first physical sample is unprofiled.

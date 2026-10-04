@@ -29,7 +29,7 @@ Inspect the relevant eviction, retry, heartbeat, or polling intervals. Choose a 
 
 For an isolated test harness with an injectable clock, advance the clock used by the suspected server component and await application processing and rescheduling before the next tick. Use controlled response sizes, stream chunking, cancellation and backpressure when those are the suspected owners. Virtual time does not accelerate real I/O or native cleanup; keep a real-time reproduction when those matter.
 
-`isolated-probe.py --checkpoints` specifies cumulative cycle counts. Its `--settle` delay applies at checkpoints, not every cycle, and `--timeout` bounds startup and individual snapshot operations, not total soak duration. These flags do not implement a timer simulator or a total run budget. Add a workload-specific harness only when needed; give it a total deadline and guaranteed child cleanup.
+`isolated-probe.py --checkpoints` specifies cumulative cycle counts. Its `--settle` delay applies at checkpoints, not every cycle, and `--timeout` bounds startup and individual snapshot operations, not total soak duration. `--max-seconds` now bounds the total child run and `--max-rss-mib` adds a sampled RSS stop; these flags do not implement a timer simulator. Add a workload-specific harness only when needed; give it a total deadline and guaranteed child cleanup.
 
 ## Interpret and retain a regression
 

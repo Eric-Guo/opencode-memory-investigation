@@ -6,6 +6,9 @@ import datetime
 import hashlib
 import json
 import os
+import platform
+import threading
+import importlib.util
 import re
 import secrets
 import shutil
@@ -15,6 +18,9 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+_spec = importlib.util.spec_from_file_location("process_memory", Path(__file__).with_name("process-memory.py"))
+_memory = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_memory)
 
 
 def checkpoint_list(value):
@@ -48,12 +54,16 @@ def main():
                         help="session-events also connects SSE, creates/deletes a session, drains events and disconnects")
     parser.add_argument("--settle", type=float, default=.5, help="Seconds to settle before each checkpoint (0..60)")
     parser.add_argument("--node", default="node", help="Node executable used for offline snapshot summarization")
+    parser.add_argument("--max-seconds", type=float, default=600, help="Total child run budget, including snapshots")
+    parser.add_argument("--max-rss-mib", type=float, default=2048, help="Stop child above sampled RSS ceiling; not a hard OS allocation limit")
     parser.add_argument("--timeout", type=float, default=60, help="Startup and per-snapshot deadline in seconds")
     args = parser.parse_args()
     binary = args.binary.resolve()
     node = shutil.which(args.node)
     if not binary.is_file() or not os.access(binary, os.X_OK):
         parser.error("--binary must be an existing executable")
+    if args.max_seconds <= 0 or args.max_rss_mib <= 0:
+        parser.error("Resource budgets must be positive")
     if args.timeout <= 0 or not 0 <= args.settle <= 60:
         parser.error("Requires a positive timeout and settle time of 0..60 seconds")
     if args.snapshots != "none" and (not node or not hasattr(signal, "SIGUSR1")):
@@ -61,10 +71,11 @@ def main():
     # Private directory + restrictive child umask keep snapshots and logs local.
     root = args.out.resolve()
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
-    for name in ["home", "data", "cache", "config", "state", "project"]:
+    for name in ["home", "data", "cache", "config", "state", "project", "tmp"]:
         (root / name).mkdir(mode=0o700)
-    env = {key: os.environ[key] for key in ["PATH", "TMPDIR", "USER", "LOGNAME", "LANG", "LC_ALL"] if key in os.environ}
+    env = {key: os.environ[key] for key in ["PATH", "LANG", "LC_ALL"] if key in os.environ}
     env.update({
+        "HOME": str(root / "home"), "TMPDIR": str(root / "tmp"),
         "XDG_DATA_HOME": str(root / "data"), "XDG_CACHE_HOME": str(root / "cache"),
         "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state"),
         "OPENCODE_TEST_HOME": str(root / "home"), "OPENCODE_CONFIG_DIR": str(root / "config"),
@@ -75,6 +86,7 @@ def main():
     with binary.open("rb") as executable:
         digest = hashlib.file_digest(executable, "sha256").hexdigest()
     report = {
+        "platform": platform.system(), "max_seconds": args.max_seconds, "max_rss_mib": args.max_rss_mib,
         "binary": str(binary), "started": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "binary_sha256": digest,
         "workload": args.workload, "snapshot_mode": args.snapshots, "settle_seconds": args.settle,
@@ -87,6 +99,32 @@ def main():
     with log_path.open("w") as log:
         child = subprocess.Popen([str(binary), "serve", "--hostname", "127.0.0.1", "--port", "0"],
                                  env=env, cwd=root, stdout=log, stderr=log, umask=0o077)
+        started = time.monotonic()
+        stop_watchdog = threading.Event()
+        def watchdog():
+            while not stop_watchdog.wait(.25):
+                if child.poll() is not None:
+                    return
+                try:
+                    rss = int(subprocess.check_output(["ps", "-p", str(child.pid), "-o", "rss="], text=True, timeout=2)) / 1024
+                    reason = "total deadline" if time.monotonic() - started > args.max_seconds else "RSS ceiling" if rss > args.max_rss_mib else None
+                    if reason:
+                        report["budget_stop"] = {"reason": reason, "rss_mib": rss, "elapsed_seconds": time.monotonic() - started}
+                        child.terminate()
+                        try:
+                            child.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            child.kill()
+                        return
+                except (ProcessLookupError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                    if child.poll() is not None:
+                        return
+                    if time.monotonic() - started > args.max_seconds:
+                        report["budget_stop"] = {"reason": "total deadline; RSS unavailable", "elapsed_seconds": time.monotonic() - started}
+                        child.kill()
+                        return
+        monitor = threading.Thread(target=watchdog, daemon=True)
+        monitor.start()
         report["pid"] = child.pid
         save()
         try:
@@ -130,12 +168,15 @@ def main():
                         raise RuntimeError("Unexpected model execution in isolated session workload")
                 profiled = any("snapshot_accounted_mib" in item for item in report["samples"])
                 record = {
+                    "elapsed_seconds": time.monotonic() - started,
                     "cycles": cycles, "time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "physical_footprint_mib": footprint(child.pid, root / f"cycles-{cycles}-vmmap.txt"),
                     "rss_mib": int(subprocess.check_output(["ps", "-p", str(child.pid), "-o", "rss="], text=True)) / 1024,
                     "physical_measurement_phase": "after earlier snapshots; profiler overhead included" if profiled else "pre-profiling",
                     "loaded_locations": 0,
                 }
+                if platform.system() == "Linux":
+                    record.update(_memory.linux_memory(child.pid, root / f"cycles-{cycles}-proc.txt"))
                 report["samples"].append(record)
                 save()
                 final = args.checkpoints[-1] if args.checkpoints else 0
@@ -209,8 +250,12 @@ def main():
                 if cycles in args.checkpoints:
                     time.sleep(args.settle)
                     sample(cycles)
+            if report.get("budget_stop") or child.poll() is not None:
+                raise RuntimeError("Isolated child stopped before completion; inspect budget_stop and logs")
             report["status"] = "complete"
         finally:
+            stop_watchdog.set()
+            monitor.join(timeout=6)
             if child.poll() is None:
                 child.terminate()
                 try:
@@ -219,7 +264,7 @@ def main():
                     child.kill()
                     child.wait(timeout=10)
             report["child_exit_code"] = child.returncode
-            if report["status"] != "complete":
+            if report.get("budget_stop") or report["status"] != "complete":
                 report["status"] = "failed"
             save()
     print(json.dumps({"results": str(root / "results.json"), "child_stopped": child.poll() is not None}), flush=True)
