@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -22,6 +23,23 @@ class LinuxTests(unittest.TestCase):
         self.assertGreaterEqual(value['threads'], 1)
         self.assertGreaterEqual(value['file_descriptors'], 3)
         self.assertNotIn('physical_footprint_mib', value)
+    def test_zombie_accounting(self):
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0)
+        try:
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                value = memory.linux_memory(pid)
+                if value['is_zombie']:
+                    break
+                time.sleep(.01)
+            self.assertTrue(value['is_zombie'])
+            self.assertEqual(value['process_state'], 'Z')
+            self.assertIsNone(value['rss_mib'])
+            os.kill(pid, 0)  # Existence still succeeds for this unreaped child.
+        finally:
+            os.waitpid(pid, 0)
     def test_missing_process(self):
         with self.assertRaises(FileNotFoundError):
             memory.linux_memory(2147483647)

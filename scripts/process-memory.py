@@ -17,7 +17,8 @@ def linux_memory(pid, destination=None):
     base = Path('/proc') / str(pid)
     status = base.joinpath('status').read_text()
     values = kb_fields(status)
-    result = {'platform': 'Linux', 'rss_mib': values.get('VmRSS'),
+    state = next((line.split()[1] for line in status.splitlines() if line.startswith('State:')), None)
+    result = {'platform': 'Linux', 'process_state': state, 'is_zombie': state == 'Z', 'rss_mib': values.get('VmRSS'),
               'rss_peak_mib': values.get('VmHWM'), 'virtual_mib': values.get('VmSize'),
               'rss_anon_mib': values.get('RssAnon'), 'rss_file_mib': values.get('RssFile'),
               'rss_shmem_mib': values.get('RssShmem'), 'swap_mib': values.get('VmSwap')}
@@ -27,11 +28,15 @@ def linux_memory(pid, destination=None):
         result.update({'pss_mib': fields.get('Pss'), 'private_dirty_mib': fields.get('Private_Dirty'),
                        'private_clean_mib': fields.get('Private_Clean'),
                        'anonymous_mib': fields.get('Anonymous'), 'smaps_rss_mib': fields.get('Rss')})
-    except (PermissionError, FileNotFoundError) as error:
+    except (PermissionError, FileNotFoundError, ProcessLookupError) as error:
         rollup = type(error).__name__
         result['smaps_unavailable'] = type(error).__name__
-    result['threads'] = len(list(base.joinpath('task').iterdir()))
-    result['file_descriptors'] = len(list(base.joinpath('fd').iterdir()))
+    for field, directory in [('threads', 'task'), ('file_descriptors', 'fd')]:
+        try:
+            result[field] = len(list(base.joinpath(directory).iterdir()))
+        except (PermissionError, FileNotFoundError, ProcessLookupError) as error:
+            result[field] = None
+            result[field + '_unavailable'] = type(error).__name__
     if destination:
         Path(destination).write_text(status + '\n' + rollup)
         Path(destination).chmod(0o600)

@@ -5,11 +5,11 @@ description: Investigate OpenCode server memory usage and suspected leaks, inclu
 
 # OpenCode memory investigation
 
-Distinguish startup/dependency costs, cached project state, native allocations, and workload-dependent leaks. Establish a pre-profiling baseline before taking a heap snapshot. Use the current PID, binary, build, and source; past measurements are examples, not thresholds.
+Distinguish startup/dependency costs, cached project state, native allocations, and workload-dependent leaks. Establish a pre-profiling baseline before taking a heap snapshot. Use only the authorized investigation scope; do not start a background daemon or model workload merely to look for a leak. Use the current PID, binary, build, and source; past measurements are examples, not thresholds.
 
 ## Start with inexpensive evidence
 
-1. Resolve the requested process with `ps`; inspect its exact command, uptime, CPU and executable. Record repository revision and working-tree status. A filename such as `opencode2-v2.0.7` may contain a different dev build; corroborate with service registration or that process's startup log.
+1. Resolve the requested process with `ps`; inspect its exact command, uptime, CPU and executable. Record repository revision and working-tree status. Check process state: a zombie is not live RSS, and kill(pid, 0) succeeding does not establish liveness. In cloud runs, verify the sampler and target share the relevant PID namespace; an invisible foreign PID is not proof of exit. A filename such as `opencode2-v2.0.7` may contain a different dev build; corroborate with service registration or that process's startup log.
 2. On macOS or Linux, collect several samples with the helper below. It only reads process state and writes a new private evidence directory. It never signals or restarts the process.
 
    ```bash
@@ -17,8 +17,9 @@ Distinguish startup/dependency costs, cached project state, native allocations, 
    ```
 
    Defaults: three samples, ten seconds apart. Use `--samples 1` for a quick inventory. Linux uses `/proc/<pid>/status` and `smaps_rollup` with FD/thread counts. Its RSS/PSS and anonymous/file-backed categories are not macOS physical footprint. See [Linux accounting and budgets](references/linux.md).
-3. Read the relevant server diagnostics and source. Use [the OpenCode reference](references/opencode.md) for file anchors and authenticated location inventory. Keep service passwords in memory and out of tool output. Do not invoke a command that ensures or replaces the managed server merely to obtain status.
-4. Compare like metrics. macOS physical footprint, RSS, virtual reservation, V8 heap, external buffers, and serialized snapshot size are different measures. A SQLite cache limit is not its actual occupancy. A single large number does not establish growth or a leak.
+3. For a workspace-sharing owner, use task/session queries through its pure file client and sample the actual owner only from its owning execution context. Do not open another server on its database or read provider credentials for status. Read `run-opencode-helper` when that runtime mode needs clarification.
+4. Read the relevant server diagnostics and source. Use [the OpenCode reference](references/opencode.md) for file anchors and authenticated location inventory. Keep service passwords in memory and out of tool output. Do not invoke a command that ensures or replaces the managed server merely to obtain status.
+5. Compare like metrics. macOS physical footprint, RSS, virtual reservation, V8 heap, external buffers, and serialized snapshot size are different measures. A SQLite cache limit is not its actual occupancy. A single large number does not establish growth or a leak.
 
 ## Obtain and summarize a heap only when useful
 
