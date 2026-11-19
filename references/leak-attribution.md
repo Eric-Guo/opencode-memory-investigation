@@ -58,6 +58,15 @@ This is a candidate-owner tool, not a full V8 garbage collector model: condition
 
 Tie a suspected leak to a completed lifecycle that should release the object, a retaining owner in current source, and repeated post-cleanup accumulation. Where practical, show that clearing/fixing that owner removes the growth in the isolated reproduction. Do not change cache policy solely to make a benchmark smaller.
 
+## Attribute a retained Location
+
+1. Establish the eviction of the exact Location key using the same run's log or isolated eviction response and routing inventory. Use the canonical directory and workspace identity. A route disappearing establishes eviction from the map.
+2. Inspect the surviving `Location` descriptor and representative scoped services independently. For a filesystem graph, follow the `FileSystem.find` closure to the Location it captured. Inspect the descriptor's incoming edges as well, since a process-global cache can keep the descriptor alive after the service graph is collected.
+3. Tie each object to a strong retaining path and to its scope or owner in the installed code. For a timer, follow the callback through any suspended fiber and its Effect Context to the service or descriptor by object ID. Compare that ID with the value reached through `LocationServiceMap` in the same heap. Directory strings and constructor names can match across reopened instances. For a minified bundle, map the closure or fiber continuation to the extracted build's source.
+4. Track the same object IDs across checkpoints within one isolate. A/B/C cohorts can omit objects already present at warm-up. For a known object, check its ID directly before and after eviction, deadline, or owner release. Report survival of the descriptor, scoped services, and owner separately. A leak or growth claim needs evidence across equivalent completed cycles.
+
+See the [evicted root example](opencode.md#evicted-root-and-console-timer-example) for a descriptor that remained cached while its scoped filesystem service was collected.
+
 ## Native follow-up and reporting
 
 If heap/application counts remain stable while unprofiled physical memory grows, retain the vmmap files and compare resident allocator/native regions. V8 committed capacity, native allocations and fragmentation can remain after the objects that caused them are gone. SQLite database/WAL sizes and cache limits do not report actual cache occupancy. Use allocator or SQLite counters when available; label an allocator explanation as a hypothesis until measured. Snapshot-native nodes cover only what V8 reports, not all native allocations.

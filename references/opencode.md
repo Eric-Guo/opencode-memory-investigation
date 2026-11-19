@@ -35,13 +35,13 @@ Use `lsof` to identify the actual database, native addons, listening address, an
 
 In the September 2026 build, registration was in `~/.local/state/opencode/service.json`; channel-specific filenames and XDG roots may differ. Confirm its PID matches the target before using the URL. The password may be in registration or the corresponding configuration file. Read only the needed fields, use HTTP Basic authentication with username `opencode`, and keep the password out of stdout, shell arguments and saved reports.
 
-`GET /api/debug/location` lists loaded graphs without booting another graph. Do not use `DELETE /api/debug/location` or `/api/location/reload` against the user's live server for an ordinary inventory. Those are mutations; the reproduction helper uses DELETE only against its own isolated server.
+`GET /api/debug/location` lists the keys currently routed by `LocationServiceMap` without booting a graph. Use it to verify eviction and use the heap to check what survives. Do not use `DELETE /api/debug/location` or `/api/location/reload` against the user's live server for an ordinary inventory. Those are mutations; the reproduction helper uses DELETE only against its own isolated server.
 
 The isolated helper assumes:
 
 - `serve --hostname 127.0.0.1 --port 0` prints `server listening on http://127.0.0.1:<port>`.
 - `OPENCODE_PASSWORD`, XDG directory overrides, `OPENCODE_TEST_HOME`, `OPENCODE_CONFIG_DIR`, `OPENCODE_DISABLE_MODELS_FETCH`, `OPENCODE_CONFIG_PROJECT_DISABLE`, `OPENCODE_DISABLE_FFF`, and `OPENCODE_FILEWATCHER_DISABLE` have the meanings used in `server-process.ts`.
-- `GET /api/agent` waits for plugin activation; `GET /api/model` materializes model availability. `GET /api/provider` alone did not wait for activation in the investigated build.
+- `GET /api/agent` and `GET /api/model` open a Location and read its current state. Plugin activation is asynchronous in the investigated November 2026 build. When a reproduction requires a specific plugin, observe it in `GET /api/plugin` or wait for its first expected local event or request.
 - Location queries use `location[directory]`; DELETE on `/api/debug/location` evicts that location.
 - The optional `session-events` workload uses `GET /api/event` (initial `server.connected` SSE frame), `POST /api/session` with an explicit `location.directory` (response `data.id`), then `DELETE /api/session/:id`. The stream must deliver `session.deleted` with `data.sessionID`. `GET /api/session` and `/api/session/active` return `data` collections that must be empty at checkpoints. No prompt/model execution endpoint is called.
 - SIGUSR1 writes a V8 snapshot under the isolated data/log directory and logs `heap snapshot written` with its pathname.
@@ -49,6 +49,16 @@ The isolated helper assumes:
 A contract mismatch should stop the probe and preserve its logs. Adapt the helper after inspecting that version; do not fall back to the live registration or user configuration.
 
 For session/subscription attribution, inspect `packages/server/src/event-feed.ts` (subscriber queue ownership and finalizers), `packages/server/src/handlers/event.ts` (SSE stream scope), `packages/core/src/bus.ts` (routing maps, listeners, subscriptions), and `packages/core/src/session/run-coordinator.ts` (execution settlement). An empty location inventory does not imply that process-global maps or active borrowed graphs are empty.
+
+## Authenticated heap capture
+
+Where the installed build exposes `POST /api/debug/heap-dump`, use the same PID-verified loopback URL and in-memory Basic authentication as for inventory. The optional `directory` query parameter accepts an absolute path. Prefer a private output directory and check the returned PID and path against the target and the server's completion log. Inspect `packages/protocol/src/groups/debug.ts` and `packages/server/src/handlers/debug.ts` for build-specific contracts. This endpoint pauses the target just like signal-based capture. The bundled isolated probe still uses its verified signal handler.
+
+## Evicted root and Console timer example
+
+In the November 2026 Node SEA investigation, an evicted `/` Location descriptor survived in `Shell.Daemon.places`. The path ran through the cached entry's `runs` interface and a closure that captured the Location. Its shell-run map was empty. The isolated run reproduced the same descriptor surviving eviction and the timer deadline. The scoped `/` filesystem service was already gone by the first post-eviction heap. Inspect `place`, `at`, and `places` in `packages/core/src/shell.ts` when a Location object has this owner.
+
+The 60-second timer in the same live heap was the OpenCode Console configuration poll for a still-routed home Location. The fiber's filesystem closure was identical to the one in the home routing entry. With both Locations in an isolated server, the home tick replaced its timeout and kept the same fiber and filesystem closure. Eviction canceled the corresponding Location's poll. Inspect `poll`, its scoped `FiberHandle`, and the installed callback in `packages/core/src/plugin/provider/opencode.ts`. A synthetic credential pointed at a loopback Console fixture can exercise this polling path without a model request or user credentials.
 
 ## Plugin attribution
 

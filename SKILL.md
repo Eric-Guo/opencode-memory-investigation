@@ -25,15 +25,15 @@ Distinguish startup/dependency costs, cached project state, native allocations, 
 
 Prefer an existing snapshot or an isolated reproduction before capturing the live process. A snapshot pauses execution and can substantially increase both peak and subsequent memory usage. Explain that concrete effect before live capture; respect existing authorization without adding a blanket confirmation requirement. Do not restart the live service just to reset the measurement.
 
-Verify the target runtime and installed signal handler first. In the investigated OpenCode build, `packages/cli/src/heap.ts` handles SIGUSR1 by calling `writeHeapSnapshot`; SIGUSR1 is **not** a reliable way to open the inspector in this application. Do not assume that behavior for a different binary or a Bun runtime.
+Verify the target runtime and capture mechanism first. For signal-based capture, inspect the installed handler. In the investigated OpenCode build, `packages/cli/src/heap.ts` handles SIGUSR1 by calling `writeHeapSnapshot`; SIGUSR1 is **not** a reliable way to open the inspector in this application. Do not assume that behavior for a different binary or a Bun runtime.
 
-When live capture is appropriate, send the verified signal once, wait for that PID's `heap snapshot written` log entry, verify the resulting JSON is complete, and make the file private. Do not infer completion from a briefly stable file size. Keep the snapshot local; it can contain session data and credentials. Label all subsequent process measurements as affected by profiling.
+When live capture is appropriate, use the verified signal or the authenticated [heap-dump endpoint](references/opencode.md#authenticated-heap-capture) once. Confirm the target PID's `heap snapshot written` log entry, verify the JSON is complete, and make the file private. Do not infer completion from a briefly stable file size. Keep the snapshot local; it can contain session data and credentials. Label all subsequent process measurements as affected by profiling.
 
 ```bash
 node <skill-dir>/scripts/summarize-heap.mjs /path/before.heapsnapshot /path/after.heapsnapshot --out /tmp/heap-summary-<unique>.json
 ```
 
-The summary includes node self-size totals, type and constructor counts, loaded script source bytes, duplicate package roots, plugin reload generations, and pairwise deltas. It omits string values and source bodies. Its totals include snapshot-reported native nodes; call them **snapshot-accounted memory**, not `process.memoryUsage().heapUsed`. Top constructor bytes are shallow sizes, not retained sizes. For survivor cohorts and candidate retaining paths, use `trace-heap.mjs` as described in [leak attribution](references/leak-attribution.md); use a heap viewer for dominators and precise retained sizes. Keep raw snapshots when further attribution is needed: summaries cannot reconstruct edges or object identities.
+The summary includes node self-size totals, type and constructor counts, loaded script source bytes, duplicate package roots, plugin reload generations, and pairwise deltas. It omits string values and source bodies. Its totals include snapshot-reported native nodes; call them **snapshot-accounted memory**, not `process.memoryUsage().heapUsed`. Top constructor bytes are shallow sizes, not retained sizes. For survivor cohorts and candidate retaining paths, use `trace-heap.mjs` as described in [leak attribution](references/leak-attribution.md); use a heap viewer for dominators and precise retained sizes. Keep raw snapshots for retaining edges and object identities. For eviction investigations, use the [Location identity checks](references/leak-attribution.md#attribute-a-retained-location) to identify the surviving object, its owner, and its relationship to the routed service graph.
 
 ## Reproduce a lifecycle leak in isolation
 
@@ -47,7 +47,7 @@ python3 <skill-dir>/scripts/isolated-probe.py \
   --checkpoints 10,30,100
 ```
 
-Without `--checkpoints`, it measures only a fresh-server baseline. It starts its own server on a loopback ephemeral port with temporary HOME/TMP/data/configuration/cache/state/project directories, no inherited provider credentials, model fetching disabled, and filesystem watchers disabled. It does not accept a live server URL or use `serve --service`. It waits for agent/plugin initialization, reads models, evicts its own project, and verifies the loaded-location list is empty before each sample. It terminates only its own child, including on failure.
+Without `--checkpoints`, it measures only a fresh-server baseline. It starts its own server on a loopback ephemeral port with temporary HOME/TMP/data/configuration/cache/state/project directories, no inherited provider credentials, model fetching disabled, and filesystem watchers disabled. It does not accept a live server URL or use `serve --service`. It opens its fixture Location through agent and model reads, evicts it, and verifies the routed Location list is empty before each sample. A reproduction that needs a specific plugin must observe that plugin's readiness or activity. It terminates only its own child, including on failure.
 
 - The child has a default 600-second total deadline and 2048-MiB sampled RSS ceiling. Set `--max-seconds` and `--max-rss-mib` for the available machine budget; RSS polling is not a hard allocation limit and cannot guarantee OOM prevention.
 - `--snapshots none` never signals the child; all footprint samples are unprofiled. Node is not needed for analysis in this mode.
